@@ -13,13 +13,24 @@
 #pragma once
 
 #include <list>
+#include <memory>
 #include <mutex>  // NOLINT
+#include <unordered_map>
 #include <vector>
 
 #include "buffer/replacer.h"
 #include "common/config.h"
 
 namespace bustub {
+
+// Node is the element of linked list.
+class Node {
+ public:
+  explicit Node(frame_id_t frame_id) : frame_id_(frame_id) {}
+  frame_id_t frame_id_;
+  std::shared_ptr<Node> left_;
+  std::shared_ptr<Node> right_;
+};
 
 /**
  * LRUReplacer implements the lru replacement policy, which approximates the Least Recently Used policy.
@@ -46,7 +57,15 @@ class LRUReplacer : public Replacer {
   size_t Size() override;
 
  private:
-  // TODO(student): implement me!
+  // NOTE(student): implement me!
+  std::mutex mu_;
+  std::shared_ptr<Node> head_, tail_;
+  std::unordered_map<frame_id_t, std::shared_ptr<Node>> page_table_;
+  size_t capacity_;
+
+  void insert(const std::shared_ptr<Node> &node);
+
+  bool remove(const frame_id_t &frame_id);
 };
 
 }  // namespace bustub

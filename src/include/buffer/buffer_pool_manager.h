@@ -160,7 +160,8 @@ class BufferPoolManager {
   DiskManager *disk_manager_ __attribute__((__unused__));
   /** Pointer to the log manager. */
   LogManager *log_manager_ __attribute__((__unused__));
-  /** Page table for keeping track of buffer pool pages. */
+  /** Page table for keeping track of buffer pool pages.
+   ** Physical page id -> Buffer pool page index */
   std::unordered_map<page_id_t, frame_id_t> page_table_;
   /** Replacer to find unpinned pages for replacement. */
   Replacer *replacer_;
@@ -168,5 +169,12 @@ class BufferPoolManager {
   std::list<frame_id_t> free_list_;
   /** This latch protects shared data structures. We recommend updating this comment to describe what it protects. */
   std::mutex latch_;
+
+ private:
+  bool is_all_pinned();
+
+  void init_new_page(frame_id_t frame_id, page_id_t page_id);
+
+  frame_id_t find_replace();
 };
 }  // namespace bustub

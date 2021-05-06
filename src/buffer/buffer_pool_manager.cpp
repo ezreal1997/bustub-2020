@@ -42,14 +42,69 @@ Page *BufferPoolManager::FetchPageImpl(page_id_t page_id) {
   // 2.     If R is dirty, write it back to the disk.
   // 3.     Delete R from the page table and insert P.
   // 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
+  if (page_id == INVALID_PAGE_ID) {
+    return nullptr;
+  }
+  std::scoped_lock lock(latch_);
+  // 1.1
+  if (page_table_.find(page_id) != page_table_.end()) {
+    auto frame_id = page_table_[page_id];
+    pages_[frame_id].pin_count_++;
+    replacer_->Pin(frame_id);
+    return &pages_[frame_id];
+  }
+  // 1.2
+  if (!is_all_pinned()) {
+    // 2 & 3
+    auto frame_id = find_replace();
+    page_table_.emplace(page_id, frame_id);
+    // 4
+    init_new_page(frame_id, page_id);
+    disk_manager_->ReadPage(page_id, pages_[frame_id].GetData());
+    return &pages_[frame_id];
+  }
+
   return nullptr;
 }
 
-bool BufferPoolManager::UnpinPageImpl(page_id_t page_id, bool is_dirty) { return false; }
+bool BufferPoolManager::UnpinPageImpl(page_id_t page_id, bool is_dirty) {
+  if (page_id == INVALID_PAGE_ID) {
+    return false;
+  }
+  std::scoped_lock lock(latch_);
+
+  auto iter = page_table_.find(page_id);
+  if (iter == page_table_.end()) {
+    return false;
+  }
+  auto frame_id = iter->second;
+  pages_[frame_id].pin_count_--;
+  if (pages_[frame_id].pin_count_ <= 0) {
+    replacer_->Unpin(frame_id);
+  }
+  pages_[frame_id].is_dirty_ |= is_dirty;
+
+  return true;
+}
 
 bool BufferPoolManager::FlushPageImpl(page_id_t page_id) {
   // Make sure you call DiskManager::WritePage!
-  return false;
+  if (page_id == INVALID_PAGE_ID) {
+    return false;
+  }
+  std::scoped_lock lock(latch_);
+
+  auto iter = page_table_.find(page_id);
+  if (iter == page_table_.end()) {
+    return false;
+  }
+  auto frame_id = iter->second;
+  if (pages_[frame_id].is_dirty_) {
+    disk_manager_->WritePage(page_id, pages_[frame_id].GetData());
+    pages_[frame_id].is_dirty_ = false;
+  }
+
+  return true;
 }
 
 Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
@@ -58,7 +113,23 @@ Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
   // 2.   Pick a victim page P from either the free list or the replacer. Always pick from the free list first.
   // 3.   Update P's metadata, zero out memory and add P to the page table.
   // 4.   Set the page ID output parameter. Return a pointer to P.
-  return nullptr;
+  std::scoped_lock lock(latch_);
+  // 0
+  auto p_id = disk_manager_->AllocatePage();
+  // 1
+  if (is_all_pinned()) {
+    return nullptr;
+  }
+  // 2
+  auto replace_fid = find_replace();
+  // 3
+  init_new_page(replace_fid, p_id);
+  pages_[replace_fid].ResetMemory();
+  // 4
+  page_table_.emplace(p_id, replace_fid);
+  *page_id = p_id;
+
+  return &pages_[replace_fid];
 }
 
 bool BufferPoolManager::DeletePageImpl(page_id_t page_id) {
@@ -67,11 +138,63 @@ bool BufferPoolManager::DeletePageImpl(page_id_t page_id) {
   // 1.   If P does not exist, return true.
   // 2.   If P exists, but has a non-zero pin-count, return false. Someone is using the page.
   // 3.   Otherwise, P can be deleted. Remove P from the page table, reset its metadata and return it to the free list.
-  return false;
+  std::scoped_lock lock(latch_);
+  // 0
+  disk_manager_->DeallocatePage(page_id);
+  // 1
+  auto iter = page_table_.find(page_id);
+  if (iter == page_table_.end()) {
+    return true;
+  }
+  // 2
+  auto cur_frame_id = iter->second;
+  if (pages_[cur_frame_id].GetPinCount() > 0) {
+    return false;
+  }
+  // 3
+  replacer_->Pin(cur_frame_id);
+  page_table_.erase(page_id);
+  pages_[cur_frame_id].page_id_ = INVALID_PAGE_ID;
+  free_list_.push_back(cur_frame_id);
+
+  return true;
 }
 
 void BufferPoolManager::FlushAllPagesImpl() {
   // You can do it!
+  std::scoped_lock lock(latch_);
+
+  for (const auto &[k, v] : page_table_) {
+    if (!pages_[v].is_dirty_) {
+      continue;
+    }
+    disk_manager_->WritePage(k, pages_[v].GetData());
+    pages_[v].is_dirty_ = false;
+  }
+}
+
+bool BufferPoolManager::is_all_pinned() { return free_list_.empty() && replacer_->Size() == 0; }
+
+void BufferPoolManager::init_new_page(frame_id_t frame_id, page_id_t page_id) {
+  pages_[frame_id].page_id_ = page_id;
+  pages_[frame_id].pin_count_ = 1;
+  pages_[frame_id].is_dirty_ = false;
+}
+
+frame_id_t BufferPoolManager::find_replace() {
+  frame_id_t replace_id = -1;
+  if (!free_list_.empty()) {
+    replace_id = free_list_.front();
+    free_list_.pop_front();
+  } else if (replacer_->Size() > 0) {
+    if (replacer_->Victim(&replace_id)) {
+      if (pages_[replace_id].IsDirty()) {
+        disk_manager_->WritePage(pages_[replace_id].page_id_, pages_[replace_id].GetData());
+      }
+      page_table_.erase(pages_[replace_id].page_id_);
+    }
+  }
+  return replace_id;
 }
 
 }  // namespace bustub
