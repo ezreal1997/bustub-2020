@@ -6,6 +6,8 @@
 # File extensions to be ignored anywhere in the tree.
 #==============================================================================#
 # Temp files created by most text editors.
+build/*
+cmake-build-debug/*
 *~
 # Merge files created by git.
 *.orig
